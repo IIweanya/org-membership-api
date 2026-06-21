@@ -55,6 +55,8 @@ POST /orgs/{id}/leave                 → leave the org
 | `POST` | `/auth/register` | — | Create an account (name, email, password). Returns a token. |
 | `POST` | `/auth/login` | — | Log in with email + password. Returns a token. |
 | `GET` | `/auth/me` | user | Your profile + your org memberships. |
+| `POST` | `/auth/forgot-password` | — | Email a single-use reset token (generic reply, no email enumeration). |
+| `POST` | `/auth/reset-password` | — | Submit reset token + new password to change it. |
 | `POST` | `/orgs` | user | Create an org; you become its admin. |
 | `GET` | `/orgs?search=` | — | Browse / search organizations. |
 | `GET` | `/orgs/{id}` | — | Org details. |
@@ -122,6 +124,13 @@ Delivery currently uses a **mock/console sender** (`app/email.py`): messages are
 to the terminal and recorded in an in-memory `outbox` (which the tests inspect). This
 keeps everything testable and offline. Swapping in a real provider (SMTP/SendGrid) means
 editing only `app/email.py`.
+
+## Password reset
+
+`POST /auth/forgot-password` emails a short-lived, **single-use** reset token (a JWT,
+tracked in the `password_resets` table). `POST /auth/reset-password` verifies that token
+and sets a new (re-hashed) password, then burns the token. To avoid revealing which
+emails are registered, `forgot-password` always returns the same generic reply.
 
 ## Notes
 

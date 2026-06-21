@@ -21,6 +21,9 @@ AUTH_TOKEN_EXPIRE_MINUTES = 60 * 24  # 1 day
 # How long an invite token stays valid, in minutes.
 INVITE_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 
+# How long a password-reset token stays valid, in minutes (kept short on purpose).
+RESET_TOKEN_EXPIRE_MINUTES = 30
+
 # The roles a user can have within an org. Kept deliberately small for clarity.
 ROLES = ("admin", "member")
 

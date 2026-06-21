@@ -63,6 +63,14 @@ CREATE TABLE IF NOT EXISTS invites (
     join_request_id TEXT,
     created_at      TEXT NOT NULL
 );
+
+-- A password-reset token's id. Single-use: once used=1 it can't reset again.
+CREATE TABLE IF NOT EXISTS password_resets (
+    jti        TEXT PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    used       INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -88,6 +96,8 @@ def init_db() -> None:
 def reset_db() -> None:
     """Drop and recreate every table. Used by tests for a clean slate."""
     with get_connection() as conn:
-        for table in ("invites", "join_requests", "memberships", "orgs", "users"):
+        for table in (
+            "password_resets", "invites", "join_requests", "memberships", "orgs", "users"
+        ):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.executescript(SCHEMA)

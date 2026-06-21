@@ -58,6 +58,15 @@ def get_user_by_email(email: str) -> dict | None:
     return _row_to_dict(row)
 
 
+def update_user_password(user_id: str, password_hash: str, salt: str) -> None:
+    """Overwrite a user's stored password hash + salt (used by password reset)."""
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE users SET password_hash = ?, salt = ? WHERE id = ?",
+            (password_hash, salt, user_id),
+        )
+
+
 # ---- orgs ----------------------------------------------------------------
 
 def create_org(name: str, description: str, created_by: str) -> dict:
@@ -283,3 +292,29 @@ def get_invite(jti: str) -> dict | None:
 def mark_invite_accepted(jti: str) -> None:
     with get_connection() as conn:
         conn.execute("UPDATE invites SET accepted = 1 WHERE jti = ?", (jti,))
+
+
+# ---- password resets -----------------------------------------------------
+
+def create_password_reset(jti: str, user_id: str) -> dict:
+    reset = {"jti": jti, "user_id": user_id, "used": 0, "created_at": _now()}
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO password_resets (jti, user_id, used, created_at) "
+            "VALUES (:jti, :user_id, :used, :created_at)",
+            reset,
+        )
+    return reset
+
+
+def get_password_reset(jti: str) -> dict | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM password_resets WHERE jti = ?", (jti,)
+        ).fetchone()
+    return _row_to_dict(row)
+
+
+def mark_password_reset_used(jti: str) -> None:
+    with get_connection() as conn:
+        conn.execute("UPDATE password_resets SET used = 1 WHERE jti = ?", (jti,))

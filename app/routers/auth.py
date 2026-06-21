@@ -10,12 +10,17 @@ The token returned here is your "logged-in" proof. Send it as
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from .. import security, store
+import jwt
+
+from .. import email, security, store
 from ..deps import get_current_user
 from ..models import (
+    ForgotPasswordRequest,
     LoginRequest,
     MembershipOut,
+    MessageResponse,
     RegisterRequest,
+    ResetPasswordRequest,
     TokenResponse,
     UserProfile,
 )
@@ -58,6 +63,67 @@ def login(body: LoginRequest) -> TokenResponse:
         )
     token = security.create_auth_token(user["id"])
     return TokenResponse(access_token=token, user_id=user["id"])
+
+
+# A single generic reply so we never reveal which emails are registered.
+_GENERIC_RESET_REPLY = MessageResponse(
+    message="If an account exists for that email, a password-reset email has been sent."
+)
+
+
+@router.post("/forgot-password", response_model=MessageResponse)
+def forgot_password(body: ForgotPasswordRequest) -> MessageResponse:
+    user = store.get_user_by_email(body.email)
+    # Only actually send if the user exists — but the response is identical either way.
+    if user is not None:
+        token, jti = security.create_reset_token(user["id"])
+        store.create_password_reset(jti=jti, user_id=user["id"])
+        email.send_email(
+            to=user["email"],
+            subject="Reset your password",
+            body=(
+                f"Hi {user['name']},\n\nUse this token to reset your password "
+                f"(POST /auth/reset-password). It expires soon and can be used once:"
+                f"\n\n{token}"
+            ),
+        )
+    return _GENERIC_RESET_REPLY
+
+
+@router.post("/reset-password", response_model=MessageResponse)
+def reset_password(body: ResetPasswordRequest) -> MessageResponse:
+    # 1. Verify the token's signature + expiry.
+    try:
+        claims = security.decode_token(body.reset_token)
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token",
+        )
+    if claims.get("type") != "reset":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Not a reset token"
+        )
+
+    # 2. Enforce single use via the stored jti.
+    record = store.get_password_reset(claims.get("jti", ""))
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reset token not found")
+    if record["used"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This reset token has already been used",
+        )
+
+    user = store.get_user(claims.get("user_id", ""))
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="User no longer exists")
+
+    # 3. Hash and store the new password, then burn the token.
+    password_hash, salt = security.hash_password(body.new_password)
+    store.update_user_password(user["id"], password_hash, salt)
+    store.mark_password_reset_used(record["jti"])
+    return MessageResponse(message="Your password has been reset. You can now log in.")
 
 
 @router.get("/me", response_model=UserProfile)

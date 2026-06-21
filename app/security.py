@@ -79,6 +79,22 @@ def create_invite_token(user_id: str, org_id: str, role: str) -> tuple[str, str]
     return token, jti
 
 
+def create_reset_token(user_id: str) -> tuple[str, str]:
+    """Build a single-use password-reset token. Returns (token, jti).
+
+    Like an invite, the jti is stored so the token can be used only once.
+    """
+    jti = uuid.uuid4().hex
+    payload = {
+        "type": "reset",
+        "jti": jti,
+        "user_id": user_id,
+        "exp": _now() + datetime.timedelta(minutes=config.RESET_TOKEN_EXPIRE_MINUTES),
+    }
+    token = jwt.encode(payload, config.SECRET_KEY, algorithm=config.ALGORITHM)
+    return token, jti
+
+
 def decode_token(token: str) -> dict:
     """Verify a token's signature + expiry and return its claims.
 

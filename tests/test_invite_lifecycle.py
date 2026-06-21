@@ -182,6 +182,68 @@ def test_login_returns_working_token(client):
     assert client.get("/auth/me", headers=auth_header(token)).status_code == 200
 
 
+# ---- password reset ------------------------------------------------------
+
+def _reset_token_from_email(client, user_email):
+    """Trigger forgot-password and pull the reset token out of the sent email."""
+    email.clear_outbox()
+    resp = client.post("/auth/forgot-password", json={"email": user_email})
+    assert resp.status_code == 200
+    assert len(email.outbox) == 1
+    # The token is the last whitespace-separated chunk of the email body.
+    return email.outbox[0].body.split()[-1]
+
+
+def test_full_password_reset_flow(client):
+    register(client, "Alice", "alice@acme.com", password="old-password")
+    token = _reset_token_from_email(client, "alice@acme.com")
+
+    # Reset to a new password.
+    reset = client.post(
+        "/auth/reset-password",
+        json={"reset_token": token, "new_password": "brand-new-pw"},
+    )
+    assert reset.status_code == 200
+
+    # Old password no longer works; new password does.
+    assert client.post(
+        "/auth/login", json={"email": "alice@acme.com", "password": "old-password"}
+    ).status_code == 401
+    assert client.post(
+        "/auth/login", json={"email": "alice@acme.com", "password": "brand-new-pw"}
+    ).status_code == 200
+
+
+def test_forgot_password_unknown_email_sends_nothing_but_same_reply(client):
+    email.clear_outbox()
+    resp = client.post("/auth/forgot-password", json={"email": "nobody@nowhere.com"})
+    # Same generic reply, but no email is actually sent (no account to reveal).
+    assert resp.status_code == 200
+    assert len(email.outbox) == 0
+
+
+def test_reset_token_is_single_use(client):
+    register(client, "Alice", "alice@acme.com", password="old-password")
+    token = _reset_token_from_email(client, "alice@acme.com")
+
+    first = client.post(
+        "/auth/reset-password", json={"reset_token": token, "new_password": "first-pw1"}
+    )
+    assert first.status_code == 200
+    second = client.post(
+        "/auth/reset-password", json={"reset_token": token, "new_password": "second-pw2"}
+    )
+    assert second.status_code == 400  # already used
+
+
+def test_reset_with_garbage_token_rejected(client):
+    resp = client.post(
+        "/auth/reset-password",
+        json={"reset_token": "not-a-token", "new_password": "whatever1"},
+    )
+    assert resp.status_code == 400
+
+
 # ---- role constraints ----------------------------------------------------
 
 def test_member_cannot_accept_join_request(client):
