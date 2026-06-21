@@ -18,12 +18,13 @@ os.environ["DATABASE_PATH"] = _TMP_DB
 
 from fastapi.testclient import TestClient  # noqa: E402  (after env var is set)
 
-from app import db  # noqa: E402
+from app import db, email  # noqa: E402
 from app.main import app  # noqa: E402
 
 
 @pytest.fixture
 def client():
     db.reset_db()  # clean schema before each test
+    email.clear_outbox()  # clear "sent" emails before each test
     with TestClient(app) as c:
         yield c

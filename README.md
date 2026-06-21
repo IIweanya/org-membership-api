@@ -111,6 +111,18 @@ tests/
   test_invite_lifecycle.py
 ```
 
+## Email notifications
+
+The app sends emails at key moments:
+- a user **requests to join** → all admins of the org are notified;
+- an admin **accepts** → the requester is emailed their invite token;
+- an admin **rejects** → the requester is notified.
+
+Delivery currently uses a **mock/console sender** (`app/email.py`): messages are printed
+to the terminal and recorded in an in-memory `outbox` (which the tests inspect). This
+keeps everything testable and offline. Swapping in a real provider (SMTP/SendGrid) means
+editing only `app/email.py`.
+
 ## Notes
 
 - Passwords are hashed with **PBKDF2-HMAC-SHA256** + a per-user salt (Python stdlib;

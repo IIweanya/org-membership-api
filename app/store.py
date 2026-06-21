@@ -151,6 +151,18 @@ def list_members(org_id: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def list_admin_emails(org_id: str) -> list[str]:
+    """Email addresses of every admin of an org — used to notify them of join requests."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT u.email AS email FROM memberships m "
+            "JOIN users u ON u.id = m.user_id "
+            "WHERE m.org_id = ? AND m.role = 'admin'",
+            (org_id,),
+        ).fetchall()
+    return [r["email"] for r in rows]
+
+
 def set_membership_role(user_id: str, org_id: str, role: str) -> None:
     with get_connection() as conn:
         conn.execute(

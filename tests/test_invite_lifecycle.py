@@ -16,7 +16,7 @@ import datetime
 
 import jwt
 
-from app import config, db, security, store
+from app import config, db, email, security, store
 
 
 # ---- helpers -------------------------------------------------------------
@@ -305,6 +305,57 @@ def test_invite_for_other_user_rejected(client):
         headers=auth_header(carol_token),
     )
     assert resp.status_code == 403
+
+
+# ---- email notifications -------------------------------------------------
+
+def test_join_request_notifies_admins(client):
+    admin_token = register(client, "Alice", "alice@acme.com")
+    org_id = create_org(client, admin_token, name="Acme")
+    joiner_token = register(client, "Bob", "bob@example.com")
+
+    email.clear_outbox()
+    client.post(f"/orgs/{org_id}/join-requests", headers=auth_header(joiner_token))
+
+    # Exactly one email, to the admin, announcing the request.
+    assert len(email.outbox) == 1
+    msg = email.outbox[0]
+    assert msg.to == "alice@acme.com"
+    assert "join" in msg.subject.lower()
+    assert "bob@example.com" in msg.body
+
+
+def test_accept_emails_requester_with_token(client):
+    admin_token = register(client, "Alice", "alice@acme.com")
+    org_id = create_org(client, admin_token, name="Acme")
+    joiner_token = register(client, "Bob", "bob@example.com")
+    req_id = client.post(
+        f"/orgs/{org_id}/join-requests", headers=auth_header(joiner_token)
+    ).json()["id"]
+
+    email.clear_outbox()
+    accept = client.post(f"/join-requests/{req_id}/accept", headers=auth_header(admin_token))
+    invite_token = accept.json()["invite_token"]
+
+    # Bob is emailed, and the email contains the very invite token he needs.
+    assert len(email.outbox) == 1
+    assert email.outbox[0].to == "bob@example.com"
+    assert invite_token in email.outbox[0].body
+
+
+def test_reject_emails_requester(client):
+    admin_token = register(client, "Alice", "alice@acme.com")
+    org_id = create_org(client, admin_token, name="Acme")
+    joiner_token = register(client, "Bob", "bob@example.com")
+    req_id = client.post(
+        f"/orgs/{org_id}/join-requests", headers=auth_header(joiner_token)
+    ).json()["id"]
+
+    email.clear_outbox()
+    client.post(f"/join-requests/{req_id}/reject", headers=auth_header(admin_token))
+
+    assert len(email.outbox) == 1
+    assert email.outbox[0].to == "bob@example.com"
 
 
 # ---- persistence ---------------------------------------------------------

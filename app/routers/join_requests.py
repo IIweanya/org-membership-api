@@ -12,7 +12,7 @@ specific admin approved this specific user for this specific org.
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from .. import security, store
+from .. import email, security, store
 from ..deps import get_current_user, require_org_admin
 from ..models import (
     AcceptJoinRequestResponse,
@@ -52,6 +52,17 @@ def request_to_join(
         )
 
     req = store.create_join_request(user_id=current_user["id"], org_id=org_id)
+
+    # Notify every admin of the org that someone wants to join.
+    admin_emails = store.list_admin_emails(org_id)
+    email.send_bulk(
+        recipients=admin_emails,
+        subject=f"New join request for {org['name']}",
+        body=(
+            f"{current_user['name']} ({current_user['email']}) has requested to join "
+            f"{org['name']}.\n\nReview pending requests, then accept or reject."
+        ),
+    )
     return JoinRequestOut(**req)
 
 
@@ -127,6 +138,20 @@ def accept_join_request(
         role="member",
         join_request_id=req_id,
     )
+
+    # Notify the requester that they've been accepted, and give them the invite token.
+    org = store.get_org(req["org_id"])
+    requester = store.get_user(req["user_id"])
+    if requester is not None and org is not None:
+        email.send_email(
+            to=requester["email"],
+            subject=f"Your request to join {org['name']} was accepted",
+            body=(
+                f"Good news, {requester['name']}! Your request to join {org['name']} "
+                f"was accepted.\n\nUse this invite token to finish joining "
+                f"(POST /invites/accept):\n\n{token}"
+            ),
+        )
     return AcceptJoinRequestResponse(
         join_request_id=req_id, status="accepted", invite_token=token
     )
@@ -140,6 +165,19 @@ def reject_join_request(
     req_id: str,
     current_user: dict = Depends(get_current_user),
 ) -> MessageResponse:
-    _load_pending_request_for_admin(req_id, current_user)
+    req = _load_pending_request_for_admin(req_id, current_user)
     store.set_join_request_status(req_id, "rejected")
+
+    # Notify the requester that they were not accepted.
+    org = store.get_org(req["org_id"])
+    requester = store.get_user(req["user_id"])
+    if requester is not None and org is not None:
+        email.send_email(
+            to=requester["email"],
+            subject=f"Update on your request to join {org['name']}",
+            body=(
+                f"Hi {requester['name']}, your request to join {org['name']} was not "
+                f"accepted at this time."
+            ),
+        )
     return MessageResponse(message="Join request rejected.")
