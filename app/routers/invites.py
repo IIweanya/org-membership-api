@@ -1,51 +1,28 @@
-"""Invite endpoints:
+"""Invite acceptance — the final step of joining an org.
 
-  POST /invites         (admin only) -> create an invite token for an email
-  POST /invites/accept  (public)     -> redeem an invite token, becoming a member
+  POST /invites/accept -> the user submits the invite token they were given when an
+                          admin accepted their join request. This creates their
+                          membership and burns the invite so it can't be reused.
 
-The invite token itself carries which org and role the invite is for, signed so it
-cannot be tampered with. We ALSO record the invite in the store so it can be used
-only once.
+The user must be logged in AND the invite must have been issued for that same user,
+so an invite token can't be redeemed by someone else.
 """
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from .. import security, store
-from ..deps import require_admin
-from ..models import (
-    AcceptInviteRequest,
-    AcceptInviteResponse,
-    CreateInviteRequest,
-    CreateInviteResponse,
-)
+from ..deps import get_current_user
+from ..models import AcceptInviteRequest, AcceptInviteResponse
 
 router = APIRouter(tags=["invites"])
 
 
-@router.post("/invites", response_model=CreateInviteResponse, status_code=status.HTTP_201_CREATED)
-def create_invite(
-    body: CreateInviteRequest,
-    admin: dict = Depends(require_admin),  # ROLE CONSTRAINT: admins only
-) -> CreateInviteResponse:
-    # TENANT ISOLATION: the invite is bound to the admin's own org. An admin can
-    # never invite someone into a different org.
-    org_id = admin["org_id"]
-
-    # Don't invite someone who is already a member of this org.
-    if store.find_user_by_email_in_org(body.email, org_id):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="That email is already a member of this organization",
-        )
-
-    token, jti = security.create_invite_token(body.email, org_id, body.role)
-    store.create_invite(jti=jti, email=body.email, org_id=org_id, role=body.role)
-    return CreateInviteResponse(invite_token=token)
-
-
 @router.post("/invites/accept", response_model=AcceptInviteResponse, status_code=status.HTTP_201_CREATED)
-def accept_invite(body: AcceptInviteRequest) -> AcceptInviteResponse:
+def accept_invite(
+    body: AcceptInviteRequest,
+    current_user: dict = Depends(get_current_user),
+) -> AcceptInviteResponse:
     # 1. Verify the token's signature + expiry.
     try:
         claims = security.decode_token(body.invite_token)
@@ -57,37 +34,31 @@ def accept_invite(body: AcceptInviteRequest) -> AcceptInviteResponse:
 
     if claims.get("type") != "invite":
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Not an invite token",
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Not an invite token"
         )
 
-    # 2. Look up the stored invite to enforce single use.
+    # 2. The invite must have been issued for the logged-in user.
+    if claims.get("user_id") != current_user["id"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This invite was issued for a different user",
+        )
+
+    # 3. Look up the stored invite to enforce single use.
     invite = store.get_invite(claims.get("jti", ""))
     if invite is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invite not found",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invite not found")
     if invite["accepted"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invite has already been used",
         )
 
-    # 3. Create the member (or reuse if they somehow already exist in the org).
-    existing = store.find_user_by_email_in_org(invite["email"], invite["org_id"])
-    user = existing or store.create_user(
-        email=invite["email"],
-        org_id=invite["org_id"],
-        role=invite["role"],
-    )
+    # 4. Create the membership (unless somehow already a member), then burn the invite.
+    org_id = invite["org_id"]
+    role = invite["role"]
+    if store.get_membership(current_user["id"], org_id) is None:
+        store.create_membership(user_id=current_user["id"], org_id=org_id, role=role)
+    store.mark_invite_accepted(invite["jti"])
 
-    # 4. Burn the invite so it can't be accepted again.
-    invite["accepted"] = True
-
-    token = security.create_auth_token(user)
-    return AcceptInviteResponse(
-        org_id=user["org_id"],
-        user_id=user["id"],
-        access_token=token,
-    )
+    return AcceptInviteResponse(org_id=org_id, role=role)

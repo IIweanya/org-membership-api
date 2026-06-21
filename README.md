@@ -1,34 +1,71 @@
-# Organization Membership API
+# Organization Membership API (v2)
 
-A small multi-tenant API where people create organizations, invite others by email,
-accept invites, and list their org's members — built with **Python + FastAPI**.
+A multi-tenant API where people **register**, **log in**, **create or browse
+organizations**, **request to join** them, accept invites, and manage members —
+built with **Python + FastAPI** and a **SQLite** database (data persists between
+restarts).
+
+> Looking for the simpler first version? It lives on the **`version1`** branch
+> (in-memory store, admin cold-invites by email). This branch (**`version2`**) is the
+> full product described below.
 
 ## What's a token? (the 30-second version)
 
-A **token** is a signed string that proves who you are on each request, like a
-festival wristband: hard to forge, and it carries facts about you (your org, your
-role, when it expires). We use the standard **JWT** format. There are two kinds here:
+A **token** is a signed string that proves who you are on each request — like a
+festival wristband: hard to forge, and it carries facts about you. We use the
+standard **JWT** format. There are two kinds here:
 
-- **Auth token** — given when you create an org or accept an invite. Send it as
-  `Authorization: Bearer <token>` to call protected endpoints.
-- **Invite token** — emailed to an invitee; they hand it back to `/invites/accept`.
+- **Auth token** — given when you register or log in. It encodes **only your user id**
+  (who you are). Send it as `Authorization: Bearer <token>` on every protected call.
+- **Invite token** — issued when an admin accepts your join request; you hand it back
+  to `/invites/accept` to finish joining. Single-use.
+
+**Key idea:** your *role* and *which orgs you belong to* are **not** in the token —
+they're looked up from the database on each request. That's why being promoted,
+joining, or leaving takes effect immediately without logging in again.
 
 The three rules the API enforces:
 
 | Rule | How it works |
 | --- | --- |
 | **Token validity** | Every protected call checks the JWT signature + expiry. Bad/expired → `401`. |
-| **Role constraints** | Only an `admin` may create invites. A `member` who tries → `403`. |
-| **Tenant isolation** | Your token carries your `org_id`; you only ever see your own org's members. |
+| **Role constraints** | Only an org **admin** can accept/reject join requests or promote members → else `403`. |
+| **Tenant isolation** | You can only view/manage an org you're a **member** of; your membership is checked per request → else `403`. |
+
+## The main flow
+
+```
+register / login                      → get an auth token
+POST /orgs                            → create an org (you become admin)
+GET  /orgs?search=acme                → find a company to join
+POST /orgs/{id}/join-requests         → ask to join  (admin gets notified)
+GET  /orgs/{id}/join-requests         → admin sees pending requests
+POST /join-requests/{id}/accept       → admin accepts → returns an invite token
+POST /join-requests/{id}/reject       → admin rejects (no invite)
+POST /invites/accept                  → invitee redeems token → becomes a member
+GET  /orgs/{id}/members               → members list (members only)
+POST /orgs/{id}/members/{uid}/promote → admin promotes a member to admin
+POST /orgs/{id}/leave                 → leave the org
+```
 
 ## Endpoints
 
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
-| `POST` | `/orgs` | — | Create an org + first admin. Returns an auth token. |
-| `POST` | `/invites` | admin | Invite an email with a role. Returns an invite token. |
-| `POST` | `/invites/accept` | — | Redeem an invite token, become a member. Returns an auth token. |
-| `GET` | `/members` | member | List members of your org. |
+| `POST` | `/auth/register` | — | Create an account (name, email, password). Returns a token. |
+| `POST` | `/auth/login` | — | Log in with email + password. Returns a token. |
+| `GET` | `/auth/me` | user | Your profile + your org memberships. |
+| `POST` | `/orgs` | user | Create an org; you become its admin. |
+| `GET` | `/orgs?search=` | — | Browse / search organizations. |
+| `GET` | `/orgs/{id}` | — | Org details. |
+| `POST` | `/orgs/{id}/join-requests` | user | Request to join an org. |
+| `GET` | `/orgs/{id}/join-requests` | admin | List pending requests (notification). |
+| `POST` | `/join-requests/{id}/accept` | admin | Accept → issue invite token. |
+| `POST` | `/join-requests/{id}/reject` | admin | Reject the request. |
+| `POST` | `/invites/accept` | user | Redeem an invite token → become a member. |
+| `GET` | `/orgs/{id}/members` | member | List members of your org. |
+| `POST` | `/orgs/{id}/members/{uid}/promote` | admin | Promote a member to admin. |
+| `POST` | `/orgs/{id}/leave` | member | Leave the org. |
 | `GET` | `/health` | — | Liveness check. |
 
 ## Setup & run
@@ -40,8 +77,11 @@ source .venv/Scripts/activate      # Windows (Git Bash). macOS/Linux: source .ve
 pip install -r requirements.txt
 
 uvicorn app.main:app --reload
-# open http://127.0.0.1:8000/docs to click through the API
+# open http://127.0.0.1:8000/docs
+# tip: register → copy the access_token → click "Authorize" in /docs → call protected routes
 ```
+
+Data is stored in `app.db` (created automatically). Delete that file to start fresh.
 
 ## Run the tests
 
@@ -49,27 +89,33 @@ uvicorn app.main:app --reload
 pytest -v
 ```
 
-The integration tests in `tests/test_invite_lifecycle.py` cover the full invite
-lifecycle (create → invite → accept → list) plus token validity, role constraints,
-tenant isolation, and single-use invites.
+`tests/test_invite_lifecycle.py` covers the full lifecycle (register → search →
+request → admin accepts → accept invite → list → promote → leave) plus token
+validity, role constraints, tenant isolation, the reject path, single-use invites,
+and a persistence check.
 
 ## Project layout
 
 ```
 app/
-  main.py        FastAPI app + routes
-  config.py      JWT secret & expiry settings
-  models.py      request/response schemas (Pydantic)
-  store.py       in-memory data store (swap for a real DB later)
-  security.py    create/verify JWT tokens
-  deps.py        auth dependencies (get_current_user, require_admin)
-  routers/       orgs.py, invites.py, members.py
+  main.py            FastAPI app, routes, DB init on startup
+  config.py          JWT secret, expiry, DB path
+  db.py              SQLite connection + schema
+  store.py           all data access (the only module that touches the DB)
+  security.py        password hashing (PBKDF2) + JWT create/verify
+  models.py          request/response schemas (Pydantic)
+  deps.py            auth guards: get_current_user, require_membership, require_org_admin
+  routers/           auth.py, orgs.py, join_requests.py, invites.py, members.py
 tests/
-  conftest.py            test client + store reset
+  conftest.py            test client + temp DB reset
   test_invite_lifecycle.py
 ```
 
-> **Note:** data is stored in memory, so it resets when the server restarts. This
-> keeps the project zero-setup and makes tests deterministic. The `store.py` module
-> is the only place that knows how data is persisted, so swapping in SQLite/Postgres
-> later means changing just that one file.
+## Notes
+
+- Passwords are hashed with **PBKDF2-HMAC-SHA256** + a per-user salt (Python stdlib;
+  no extra dependency). Plain passwords are never stored or returned.
+- A user can belong to **many** orgs, each with its own role.
+- The org creator is the first admin; an admin can promote others. The **last admin**
+  can't leave until they promote someone else (prevents an org with no admin).
+- `SECRET_KEY` and `DATABASE_PATH` can be overridden via environment variables.
